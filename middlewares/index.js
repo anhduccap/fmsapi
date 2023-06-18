@@ -4,17 +4,19 @@ const helper = require('../helpers/index');
 
 exports.checkToken = async (req, res, next) => {
     let token = req.header('auth-token');
-    if(!token) {
+    if (!token) {
+        console.log('Token errors');
         let code = 400;
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
-    try{
+    try {
         let decoded = await jwt.verify(token, process.env.JWT_SECRET_KEY);
         req.member_id = decoded.data.member_id;
         req.role = decoded.data.role;
         next();
     }
-    catch(err) {
+    catch (err) {
+        console.log('Catched a midleware error');
         let code = 400;
         return res.status(code).send(helper.responseFailure(false, code, err.message));
     }

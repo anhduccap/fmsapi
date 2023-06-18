@@ -1,5 +1,10 @@
 const { validationResult } = require('express-validator');
 const axios = require('axios');
+const Redis = require('redis');
+const redisClient = Redis.createClient(6379);
+redisClient.connect();
+
+const REDIS_DEFAULT_EX = 3600;
 
 const helper = require('../helpers/index');
 const CommentModel = require('../models/comment');
@@ -9,41 +14,55 @@ const LectureModel = require('../models/lecture');
 const AnnouncementModel = require('../models/announcement');
 
 exports.getAllStatistic = async (req, res) => {
-    if(req.role === 1 || req.role === 2) {
-        try{
-            let statList = await StatModel.find({}).populate('player').exec();
-            if(!statList) {
-                let code = 400;
-                return res.status(code).send(helper.responseFailure(false, code, 'Not found'));
-            }
-    
-            let code = 200;
-            return res.status(code).send(helper.responseSuccess(true, code, 'Get successful', statList));
-        }
-        catch(err){
-            let code = 500;
-            return res.status(code).send( helper.responseFailure(false, code, err.message) );
-        }
-    };
+    if (req.role === 1 || req.role === 2) {
+        redisClient.on('error', (err) => {
+            console.log("Redis connecting error:: " + err);
+        });
+        try {
+            let data = await redisClient.GET('statistics');
+            if (data != null) {
+                let code = 200;
+                return res.status(code).send(helper.responseSuccess(true, code, 'Get successful', JSON.parse(data)));
+            } else {
+                let statList = await StatModel.find({}).populate('player').exec();
 
-    let code = 400;
-    return res.status(code).send(helper.responseFailure(false, code, 'Access denied'))
+                if (!statList) {
+                    let code = 400;
+                    return res.status(code).send(helper.responseFailure(false, code, 'Not found'));
+                }
+
+                await redisClient.SETEX('statistics', REDIS_DEFAULT_EX, JSON.stringify(statList));
+
+                let code = 200;
+                return res.status(code).send(helper.responseSuccess(true, code, 'Get successful', statList));
+            }
+
+        } catch (err) {
+            console.log('Catch an error');
+            let code = 500;
+            return res.status(code).send(helper.responseFailure(false, code, err.message));
+        }
+        redisClient.close
+    } else {
+        let code = 400;
+        return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
+    }
 }
 
 exports.updateRating = async (req, res) => {
-    if(req.role !== 1 && req.role !== 2){
+    if (req.role !== 1 && req.role !== 2) {
         return res.status(500).send(helper.responseSuccess(false, 500, 'Access denied', null));
     }
-    try{
+    try {
         StatModel.findOneAndUpdate(
             {
                 _id: req.query.stat_id,
-            }, 
-            {rating: req.body.rating}
-        ).then( response => res.status(200).send(helper.responseSuccess(true, 200, 'Successful updated')))
-        .catch(err => res.status(500).send(err.message));
+            },
+            { rating: req.body.rating }
+        ).then(response => res.status(200).send(helper.responseSuccess(true, 200, 'Successful updated')))
+            .catch(err => res.status(500).send(err.message));
     }
-    catch(err){
+    catch (err) {
         return res.status(400).send(helper.responseFailure(false, 400, err.message, err.response));
     }
 }
@@ -79,12 +98,12 @@ function bubbleSort(arr, compare = defaultCompare) {
 }
 
 exports.suggestedLineup = async (req, res) => {
-    try{
+    try {
         let statList = await StatModel.find({}).populate('player').exec();
 
         // console.log(statList);
 
-        statList = statList.map( (stat) => {
+        statList = statList.map((stat) => {
             let newData = {
                 stat_id: stat._id,
                 player_id: stat.player._id,
@@ -103,15 +122,15 @@ exports.suggestedLineup = async (req, res) => {
 
         statList = bubbleSort(statList);
 
-        let GK = statList.filter( stat => stat.detail_position === 'GK');
-        let CB = statList.filter( stat => stat.detail_position === 'CB');
-        let LB = statList.filter( stat => stat.detail_position === 'LB');
-        let RB = statList.filter( stat => stat.detail_position === 'RB');
-        let CM = statList.filter( stat => stat.detail_position === 'CM');
-        let LM = statList.filter( stat => stat.detail_position === 'LM');
-        let RM = statList.filter( stat => stat.detail_position === 'RM');
-        let CAM = statList.filter( stat => stat.detail_position === 'CAM');
-        let ST = statList.filter( stat => stat.detail_position === 'ST');
+        let GK = statList.filter(stat => stat.detail_position === 'GK');
+        let CB = statList.filter(stat => stat.detail_position === 'CB');
+        let LB = statList.filter(stat => stat.detail_position === 'LB');
+        let RB = statList.filter(stat => stat.detail_position === 'RB');
+        let CM = statList.filter(stat => stat.detail_position === 'CM');
+        let LM = statList.filter(stat => stat.detail_position === 'LM');
+        let RM = statList.filter(stat => stat.detail_position === 'RM');
+        let CAM = statList.filter(stat => stat.detail_position === 'CAM');
+        let ST = statList.filter(stat => stat.detail_position === 'ST');
 
         let result = {
             GK: GK,
@@ -122,7 +141,7 @@ exports.suggestedLineup = async (req, res) => {
             LM: LM,
             RM: RM,
             CAM: CAM,
-            ST: ST,    
+            ST: ST,
         };
 
         return res.status(200).send(helper.responseSuccess(true, 200, 'Get successful', result));
@@ -135,15 +154,15 @@ exports.suggestedLineup = async (req, res) => {
 
 exports.comment = async (req, res) => {
     const errors = validationResult(req);
-    if(!errors.isEmpty()) {
+    if (!errors.isEmpty()) {
         let code = 400;
         return res
             .status(code)
-            .send( helper.responseFailure(false, code, 'Invalid input', errors.array()) );
+            .send(helper.responseFailure(false, code, 'Invalid input', errors.array()));
     }
 
     // Check case: use fake jwt of coach && only coach can comment
-    if(req.member_id !== req.params.coach_id || req.role === 3){
+    if (req.member_id !== req.params.coach_id || req.role === 3) {
         let code = 400;
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
@@ -152,8 +171,8 @@ exports.comment = async (req, res) => {
 
     let comment = escape(req.body.content);
 
-    try{
-        let stat = await StatModel.findOne({player: req.params.player_id, season: '2021'});
+    try {
+        let stat = await StatModel.findOne({ player: req.params.player_id, season: '2021' });
         let coach = await MemberModel.findById(req.params.coach_id);
 
         const NewComment = new CommentModel({
@@ -163,60 +182,60 @@ exports.comment = async (req, res) => {
         });
 
         NewComment.save((err) => {
-            if(err){
+            if (err) {
                 let code = 400;
                 return res.status(code).send(helper.responseFailure(false, code, 'Cannot comment', err.message));
             }
-            
+
             let code = 200;
-            return res.status(code).send(helper.responseSuccess(true, code, 'Comment created', {comment: NewComment, coach: coach.name}));
+            return res.status(code).send(helper.responseSuccess(true, code, 'Comment created', { comment: NewComment, coach: coach.name }));
         });
     }
-    catch(err) {
+    catch (err) {
         console.log(err.message);
     }
 }
 
 exports.editComment = async (req, res) => {
     const errors = validationResult(req);
-    if(!errors.isEmpty()) {
+    if (!errors.isEmpty()) {
         let code = 400;
         return res
             .status(code)
-            .send( helper.responseFailure(false, code, 'Invalid input', errors.array()) );
+            .send(helper.responseFailure(false, code, 'Invalid input', errors.array()));
     }
-    if(req.member_id !== req.params.coach_id || req.role !== 2){
+    if (req.member_id !== req.params.coach_id || req.role !== 2) {
         let code = 400;
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
 
-    try{
+    try {
         let newComment = escape(req.body.content);
-        let comment = await CommentModel.findOne({_id: req.params.comment_id, is_deleted: false});
+        let comment = await CommentModel.findOne({ _id: req.params.comment_id, is_deleted: false });
 
-        if(!comment) {
+        if (!comment) {
             let code = 400;
             return res.status(code).send(helper.responseFailure(false, code, 'Comment does not exist'));
         }
 
-        if(comment.content===newComment){
+        if (comment.content === newComment) {
             let code = 400;
             return res.status(code).send(helper.responseFailure(false, code, 'No changes'));
         }
 
-        if(comment.is_deleted === true){
+        if (comment.is_deleted === true) {
             let code = 400;
             return res.status(code).send(helper.responseFailure(false, code, 'Comment was deleted'));
         }
 
         let editComment = await CommentModel.findOneAndUpdate(
-            {_id: req.params.comment_id},
+            { _id: req.params.comment_id },
             {
                 content: newComment,
                 date_edited: Date.now(),
             }
         );
-        if(!editComment) {
+        if (!editComment) {
             let code = 400;
             return res.status(code).send(helper.responseFailure(true, code, 'Cannot edit comment'));
         }
@@ -227,39 +246,39 @@ exports.editComment = async (req, res) => {
             new: newComment,
         }));
     }
-    catch(err){
+    catch (err) {
         let code = 500;
-        return res.status(code).send( helper.responseFailure(false, code, err.message) );
+        return res.status(code).send(helper.responseFailure(false, code, err.message));
     }
 }
 
 exports.deleteComment = async (req, res) => {
-    if(req.member_id !== req.params.coach_id || req.role !== 2){
+    if (req.member_id !== req.params.coach_id || req.role !== 2) {
         let code = 400;
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
 
     try {
-        let comment = await CommentModel.findOne({_id: req.params.comment_id, is_deleted: false});
+        let comment = await CommentModel.findOne({ _id: req.params.comment_id, is_deleted: false });
 
-        if(!comment) {
+        if (!comment) {
             let code = 400;
             return res.status(code).send(helper.responseFailure(false, code, 'Comment does not exist'));
         }
 
-        if(comment.is_deleted === true){
+        if (comment.is_deleted === true) {
             let code = 400;
             return res.status(code).send(helper.responseFailure(true, code, 'Comment was deleted'));
         }
 
         let editComment = await CommentModel.findOneAndUpdate(
-            {_id: req.params.comment_id},
+            { _id: req.params.comment_id },
             {
                 is_deleted: true,
                 date_edited: Date.now(),
             }
         );
-        if(!editComment) {
+        if (!editComment) {
             let code = 400;
             return res.status(code).send(helper.responseFailure(true, code, 'Cannot delete comment'));
         }
@@ -267,20 +286,20 @@ exports.deleteComment = async (req, res) => {
         let code = 200;
         return res.status(code).send(helper.responseSuccess(true, code, 'Delete successful'));
     }
-    catch(err) {
+    catch (err) {
         let code = 500;
-        return res.status(code).send( helper.responseFailure(false, code, err.message) );
+        return res.status(code).send(helper.responseFailure(false, code, err.message));
     }
 }
 
 exports.createLecture = async (req, res) => {
-    if(req.member_id !== req.params.coach_id || req.role === 3){
+    if (req.member_id !== req.params.coach_id || req.role === 3) {
         let code = 400;
         console.log('400')
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
 
-    try{
+    try {
         let author = await MemberModel.findById(req.params.coach_id);
         let newLecture = new LectureModel({
             author: req.params.coach_id,
@@ -290,54 +309,54 @@ exports.createLecture = async (req, res) => {
         });
 
         newLecture.save((err) => {
-            if(err){
+            if (err) {
                 let code = 400;
                 return res.status(code).send(helper.responseFailure(false, code, 'Cant create lecture', err.message));
             }
 
             let code = 200;
-            return res.status(code).send(helper.responseSuccess(true, code, 'Create success', {lecture: newLecture, author: author}));
+            return res.status(code).send(helper.responseSuccess(true, code, 'Create success', { lecture: newLecture, author: author }));
         })
     }
-    catch(err) {
+    catch (err) {
         console.log(err.message);
     }
 }
 
 exports.getAllLecture = async (req, res) => {
     try {
-        let lectures = await LectureModel.find({is_deleted: false}).populate('author').sort({ date_created: 'desc' }).exec();
+        let lectures = await LectureModel.find({ is_deleted: false }).populate('author').sort({ date_created: 'desc' }).exec();
 
         let code = 200;
         return res.status(code).send(helper.responseSuccess(true, code, 'Get success', lectures));
     }
-    catch(err) {
+    catch (err) {
         console.log(err.message);
     }
 }
 
 exports.getLecture = async (req, res) => {
     try {
-        let lectures = await LectureModel.findOne({_id: req.params.lecture_id, is_deleted: false}).populate('author').exec();
+        let lectures = await LectureModel.findOne({ _id: req.params.lecture_id, is_deleted: false }).populate('author').exec();
 
         let code = 200;
         return res.status(code).send(helper.responseSuccess(true, code, 'Get success', lectures));
     }
-    catch(err) {
+    catch (err) {
         console.log(err.message);
     }
 }
 
 exports.editLecture = async (req, res) => {
-    if(req.member_id !== req.params.coach_id || req.role === 3){
+    if (req.member_id !== req.params.coach_id || req.role === 3) {
         let code = 400;
         console.log('400')
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
 
-    try{
+    try {
         LectureModel.findOneAndUpdate(
-            {_id: req.params.lecture_id},
+            { _id: req.params.lecture_id },
             {
                 title: escape(req.body.title),
                 category: escape(req.body.category),
@@ -345,28 +364,28 @@ exports.editLecture = async (req, res) => {
                 date_edited: Date.now(),
             }
         )
-        .then(() => {
-            let code = 200;
-            return res.status(code).send(helper.responseSuccess(true, code, 'Update success'));
-        })
-        .catch(err => {
-            let code = 400;
-            return res.status(code).send(helper.responseFailure(false, code, 'Cant create lecture', err.message));
-        });
+            .then(() => {
+                let code = 200;
+                return res.status(code).send(helper.responseSuccess(true, code, 'Update success'));
+            })
+            .catch(err => {
+                let code = 400;
+                return res.status(code).send(helper.responseFailure(false, code, 'Cant create lecture', err.message));
+            });
     }
-    catch(err) {
+    catch (err) {
         console.log(err.message);
     }
 }
 
 exports.deleteLecture = async (req, res) => {
-    if(req.member_id !== req.params.coach_id || req.role === 3){
+    if (req.member_id !== req.params.coach_id || req.role === 3) {
         let code = 400;
         console.log('400')
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
 
-    LectureModel.findOneAndUpdate({_id: req.params.lecture_id}, {is_deleted: true, date_edited: Date.now()})
+    LectureModel.findOneAndUpdate({ _id: req.params.lecture_id }, { is_deleted: true, date_edited: Date.now() })
         .then(() => {
             let code = 200;
             return res.status(code).send(helper.responseSuccess(true, code, 'Delete successfully'));
@@ -378,13 +397,13 @@ exports.deleteLecture = async (req, res) => {
 }
 
 exports.createAnnouncement = async (req, res) => {
-    if(req.member_id !== req.params.coach_id || req.role === 3){
+    if (req.member_id !== req.params.coach_id || req.role === 3) {
         let code = 400;
         console.log('400')
         return res.status(code).send(helper.responseFailure(false, code, 'Access denied'));
     }
 
-    try{
+    try {
         let coach = await MemberModel.findById(req.params.coach_id);
         let newAnnouncement = new AnnouncementModel({
             coach: req.params.coach_id,
@@ -394,16 +413,16 @@ exports.createAnnouncement = async (req, res) => {
         });
 
         newAnnouncement.save((err) => {
-            if(err){
+            if (err) {
                 let code = 400;
                 return res.status(code).send(helper.responseFailure(false, code, 'Cant create lecture', err.message));
             }
 
             let code = 200;
-            return res.status(code).send(helper.responseSuccess(true, code, 'Create success', {announcement: newAnnouncement, coach: coach}));
+            return res.status(code).send(helper.responseSuccess(true, code, 'Create success', { announcement: newAnnouncement, coach: coach }));
         })
     }
-    catch(err) {
+    catch (err) {
         console.log(err.message);
     }
 }
@@ -415,7 +434,7 @@ exports.getAllAnnouncement = async (req, res) => {
         let code = 200;
         return res.status(code).send(helper.responseSuccess(true, code, 'Get success', announcements));
     }
-    catch(err) {
+    catch (err) {
         console.log(err.message);
     }
 }
